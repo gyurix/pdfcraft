@@ -167,6 +167,7 @@ fn main() -> eframe::Result {
         }
     }
     let integrated = cfg!(target_os = "macos");
+    let window_controls = cfg!(not(any(target_os = "macos", target_os = "windows"))) && std::env::var_os("PDFCRAFT_SYSTEM_TITLEBAR").is_none();
     migrate_legacy_folders();
     // The log file lives in the settings folder; opened after the arguments (so `--version` leaves
     // no file behind) and after the PrintCraft migration (which a fresh folder would block).
@@ -188,7 +189,7 @@ fn main() -> eframe::Result {
         single_instance::Claim::Alone => None,
     };
     let choice = renderer_choice(std::env::var("PDFCRAFT_RENDERER").ok().as_deref());
-    let launch = Launch { files, options, control_file, create_images, integrated };
+    let launch = Launch { files, options, control_file, create_images, integrated, window_controls };
     // Finder, Open With and the Dock deliver files as Apple events, not arguments; catch the one
     // that launched us as well as later ones. Lives until the event loop returns.
     #[cfg(target_os = "macos")]
@@ -198,7 +199,7 @@ fn main() -> eframe::Result {
     let first = if choice == RendererChoice::Gl { eframe::Renderer::Glow } else { eframe::Renderer::Wgpu };
     let result = eframe::run_native(
         "PdfCraft",
-        native_options(integrated, first),
+        native_options(integrated, window_controls, first),
         app_creator(
             launch.clone(),
             Rc::clone(&started),
@@ -216,7 +217,7 @@ fn main() -> eframe::Result {
             log::error!("the GPU renderer (wgpu) didn't start: {e}. Starting with OpenGL instead; set PDFCRAFT_RENDERER=gl to skip wgpu.");
             eframe::run_native(
                 "PdfCraft",
-                native_options(integrated, eframe::Renderer::Glow),
+                native_options(integrated, window_controls, eframe::Renderer::Glow),
                 app_creator(
                     launch,
                     started,
@@ -256,7 +257,7 @@ fn retry_with_gl(choice: RendererChoice, app_started: bool) -> bool {
 }
 
 /// The window and renderer settings for one run.
-fn native_options(integrated: bool, renderer: eframe::Renderer) -> eframe::NativeOptions {
+fn native_options(integrated: bool, window_controls: bool, renderer: eframe::Renderer) -> eframe::NativeOptions {
     let mut viewport = egui::ViewportBuilder::default()
         .with_title("PdfCraft")
         .with_inner_size([1440.0, 920.0])
@@ -269,6 +270,7 @@ fn native_options(integrated: bool, renderer: eframe::Renderer) -> eframe::Nativ
         Ok(icon) => viewport = viewport.with_icon(icon),
         Err(e) => log::warn!("app icon: {e}"),
     }
+    viewport = viewport.with_decorations(!window_controls);
     if integrated {
         viewport = viewport.with_fullsize_content_view(true).with_titlebar_shown(false).with_title_shown(false);
     }
@@ -289,6 +291,7 @@ struct Launch {
     control_file: Option<String>,
     create_images: bool,
     integrated: bool,
+    window_controls: bool,
 }
 
 fn app_creator<'a>(
@@ -297,7 +300,7 @@ fn app_creator<'a>(
     instance: Option<&'a single_instance::Server>,
     #[cfg(target_os = "macos")] apple_events: &'a apple_events::AppleEvents,
 ) -> eframe::AppCreator<'a> {
-    let Launch { files, options, control_file, create_images, integrated } = launch;
+    let Launch { files, options, control_file, create_images, integrated, window_controls } = launch;
     Box::new(move |cc| {
         started.set(true);
         let mut app = PdfCraftApp::new();
@@ -311,6 +314,7 @@ fn app_creator<'a>(
             app.restore(&json);
         }
         app.integrated_titlebar = integrated;
+        app.window_controls = window_controls;
         app.system_text_scale = text_scale::system();
         app.update_source = Some(std::sync::Arc::new(updates::latest_release));
         app.printer_source = Some(pdfcraft_ui_egui::system_printers());
@@ -731,8 +735,16 @@ mod tests {
         assert!(!retry_with_gl(RendererChoice::Wgpu, false));
         assert!(!retry_with_gl(RendererChoice::Gl, false));
         // Each run states its renderer rather than relying on eframe's default.
-        assert_eq!(native_options(false, eframe::Renderer::Wgpu).renderer, eframe::Renderer::Wgpu);
-        assert_eq!(native_options(false, eframe::Renderer::Glow).renderer, eframe::Renderer::Glow);
+        assert_eq!(native_options(false, false, eframe::Renderer::Wgpu).renderer, eframe::Renderer::Wgpu);
+        assert_eq!(native_options(false, false, eframe::Renderer::Glow).renderer, eframe::Renderer::Glow);
+    }
+
+    #[test]
+    fn our_own_window_controls_need_the_window_managers_frame_off() {
+        let (with, without) =
+            (super::native_options(false, true, eframe::Renderer::Glow), super::native_options(false, false, eframe::Renderer::Glow));
+        assert_eq!(with.viewport.decorations, Some(false));
+        assert_eq!(without.viewport.decorations, Some(true));
     }
 
     #[test]
@@ -878,7 +890,7 @@ mod tests {
         // and an error wgpu raises before anything reaches the driver: a texture one pixel wider
         // than the device allows.
         use eframe::wgpu;
-        let native = super::native_options(false, eframe::Renderer::Wgpu);
+        let native = super::native_options(false, false, eframe::Renderer::Wgpu);
         let eframe::egui_wgpu::WgpuSetup::CreateNew(setup) = &native.wgpu_options.wgpu_setup else {
             panic!("default setup creates its own instance")
         };
