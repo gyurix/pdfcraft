@@ -51,4 +51,4 @@ jobs:
             dist/release/pdfcraft-*-linux-*.deb
             dist/release/pdfcraft-*-linux-*.tar.gz
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 3
